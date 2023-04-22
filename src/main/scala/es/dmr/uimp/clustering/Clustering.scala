@@ -43,14 +43,40 @@ object Clustering {
     df
   }
 
-  def featurizeData(df : DataFrame) : DataFrame = {
-   // TODO : Featurize the data
-    df
+  def featurizeData(df: DataFrame): DataFrame = {
+    // TODO : Featurize the data
+
+    val dfTotalPrices = df.withColumn("TotalPrice", df("Quantity")*df("UnitPrice"))
+
+    // Prices and products by invoice
+    val pricesProducts = df.groupBy("InvoiceNo").agg(
+      avg("TotalPrice").alias("AvgUnitPrice"),
+      min("TotalPrice").alias("MinUnitPrice"),
+      max("TotalPrice").alias("MaxUnitPrice"),
+      sum("Quantity").alias("NumberItems")
+    )
+
+    // Hour of the invoice
+    val dfHour = dfTotalPrices.withColumn("Time", hour(df("InvoiceDate")))
+
+    val featurizedDf = dfTotalPrices
+      .join(pricesProducts, Seq("InvoiceNo"))
+      .select("InvoiceNo", "AvgUnitPrice", "MinUnitPrice", "MaxUnitPrice", "Time", "NumberItems")
+
+    featurizedDf
   }
+
+
 
   def filterData(df : DataFrame) : DataFrame = {
    // TODO: Filter cancelations and invalid
-    df
+    val filteredDf = df
+      .filter(col("Quantity")>0)
+      .filter(col("CustomerID").isNotNull)
+      .filter(col("InvoiceDate").isNotNull)
+      .filter(!col("InvoiceNo").startsWith("C"))
+
+    filteredDf
   }
 
   def toDataset(df: DataFrame): RDD[Vector] = {
@@ -71,10 +97,16 @@ object Clustering {
 
   def elbowSelection(costs: Seq[Double], ratio : Double): Int = {
     // TODO: Select the best model
-    0
+
+    val ratios = costs.sliding(2).map{ case Seq(x, y) => y/x }.toSeq
+    ratios.indexWhere(_ > ratio) match {
+      case -1 => costs.size
+      case i => i+1
+    }
+
   }
 
-  def saveThreshold(threshold : Double, fileName : String) = {
+  def saveThreshold(threshold : Double, fileName : String): Unit = {
     val file = new File(fileName)
     val bw = new BufferedWriter(new FileWriter(file))
     // decide threshold for anomalies
