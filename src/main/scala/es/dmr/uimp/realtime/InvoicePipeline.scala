@@ -20,6 +20,7 @@ import es.dmr.uimp.clustering.KMeansClusterInvoices.{distToCentroid, trainModel}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.mllib.linalg.Vectors
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.functions.udf
 import org.apache.spark.sql.{Row, SQLContext, SparkSession}
 
 object InvoicePipeline {
@@ -47,44 +48,47 @@ object InvoicePipeline {
 
     // TODO: Load model and broadcast
     //val (kMeansModel, kMeansThreshold) = loadKMeansAndThreshold(sc, modelFile, thresholdFile)
-    //val kMeansBroadcast = sc.broadcast(kMeansModel)
-    //val kMeansThresholdBroadcast = sc.broadcast(kMeansThreshold)
+    val bcBrokers = sc.broadcast(brokers)
 
     // TODO: Build pipeline
 
     // connect to kafka
     val purchasesFeed = connectToPurchases(ssc, zkQuorum, group, topics, numThreads)
 
-    purchasesFeed.print(5)
+    System.out.println("Purchases received!")
+    purchasesFeed.print()
     // TODO: rest of pipeline
 
-    val purchases = parsePurchases(purchasesFeed)
-    System.out.println(purchases.toString)
+    val purchasesStream = parsePurchases(purchasesFeed)
+    System.out.println("Purchases parsed")
 
-    val validPurchases = getValidPurchases(purchases)
-    System.out.println(validPurchases.toString)
+    //val initialInvoiceState = sc.emptyRDD[(String, Invoice)].mapValues(_ => None)
+    val invoicesStream = purchasesStream.updateStateByKey(updateStateFunc)
+    System.out.println("Invoices stream")
 
-    val wrongPurchases = getWrongPurchases(purchases)
-    System.out.println(wrongPurchases.toString)
+    val validInvoices = getValidInvoices(invoicesStream)
+    System.out.println("Got valid invoices")
 
-    val canceledPurchases = getCanceledPurchases(purchases)
-    System.out.println(canceledPurchases.toString)
+    val wrongInvoices = getWrongInvoices(invoicesStream)
+    System.out.println("Extracted wrong invoices")
 
-    //val predictions = predictAnomaly(sc, validPurchases, kMeansModel, kMeansThreshold)
+    val canceledInvoices = getCanceledInvoices(invoicesStream)
+    System.out.println("Extracted canceled invoices")
 
-/*
-    predictions.foreachRDD(rdd => {
-      publishToKafka("anomalias_kmeans")(sc.broadcast(brokers))(rdd)
+    val predictionsKMeans = predictAnomaly(sc, validInvoices, kMeansModel, kMeansThreshold)
+
+    predictionsKMeans.foreachRDD(rdd => {
+      publishToKafka("anomalias_kmeans")(bcBrokers)(rdd)
     })
 
-    wrongPurchases.foreachRDD(rdd => {
-      publishToKafka("facturas_erroneas")(sc.broadcast(brokers))(rdd)
+    wrongInvoices.foreachRDD(rdd => {
+      publishToKafka("facturas_erroneas")(bcBrokers)(rdd)
     })
 
-    canceledPurchases.foreachRDD(rdd => {
-      publishToKafka("cancelaciones")(sc.broadcast(brokers))(rdd)
+    canceledInvoices.foreachRDD(rdd => {
+      publishToKafka("cancelaciones")(bcBrokers)(rdd)
     })
-*/
+
 
     ssc.start() // Start the computation
     ssc.awaitTermination()
@@ -136,108 +140,103 @@ object InvoicePipeline {
    * Own functions
    */
 
-  def parsePurchases(stream: DStream[(String,String)]): DStream[(Purchase)] = {
+  def parsePurchases(stream: DStream[(String,String)]): DStream[(String,Purchase)] = {
     stream
       .map(_._2)
       .map(line => new CsvParser(new CsvParserSettings()).parseLine(line))
-      .map(fields => Purchase(fields(0), fields(1).toInt, fields(2), fields(3).toDouble, fields(4), fields(5)))
+      .map(fields => (fields(0),Purchase(fields(0), fields(1).toInt, fields(2), fields(3).toDouble, fields(4), fields(5))))
   }
 
-  def getValidPurchases(stream: DStream[Purchase]): DStream[Purchase] = {
-    stream
-      .filter(purchase =>
-          purchase.quantity > 0 &&
-          purchase.customerID != null &&
-          purchase.invoiceDate != null &&
-          !purchase.invoiceNo.startsWith("C"))
+  // Function to extract the hour from the date string
+  def getHour(date: String) : Double = {
+    var out = -1.0
+    if (!StringUtils.isEmpty(date)) {
+      val hour = date.substring(10).split(":")(0)
+      if (!StringUtils.isEmpty(hour))
+        out = hour.trim.toDouble
+    }
+    out
   }
-  def getWrongPurchases(stream: DStream[Purchase]): DStream[(String, String)] = {
+
+  def updateStateFunc(newPurchase: Seq[Purchase], currentInvoiceState: Option[Invoice]): Option[Invoice] = {
+    if(newPurchase.isEmpty) {
+      currentInvoiceState
+    } else {
+
+      val invoiceNo = newPurchase.head.invoiceNo
+      // Aggregated values of the purchases
+      val numberItems = newPurchase.map(_.quantity).sum
+      val avgUnitPrice = newPurchase.map(_.unitPrice).sum/numberItems
+      val minUnitPrice = newPurchase.map(_.unitPrice).min
+      val maxUnitPrice = newPurchase.map(_.unitPrice).max
+      val lastUpdated = System.currentTimeMillis()
+      val time = getHour(newPurchase.head.invoiceDate)
+      val lines = newPurchase.length
+      val customerId = newPurchase.head.customerID
+
+      val newState = currentInvoiceState.getOrElse(Invoice(invoiceNo,avgUnitPrice,minUnitPrice,maxUnitPrice,time,numberItems,
+        lastUpdated,lines,customerId))
+
+      //if(newState.lastUpdated - currentInvoiceState.get.lastUpdated < 40000) {
+      if(lastUpdated - newState.lastUpdated < 40000) {
+        Some(newState.copy(avgUnitPrice=avgUnitPrice, minUnitPrice=minUnitPrice, maxUnitPrice=maxUnitPrice,
+        numberItems=newState.numberItems+numberItems, lastUpdated=lastUpdated, lines=newState.lines+lines))
+      } else {
+        Some(newState.copy(avgUnitPrice=avgUnitPrice, minUnitPrice=minUnitPrice, maxUnitPrice=maxUnitPrice,
+          time=time, numberItems=newState.numberItems+numberItems, lastUpdated=lastUpdated, lines=newState.lines+lines))
+        None
+      }
+    }
+  }
+
+  def getValidInvoices(stream: DStream[(String,Invoice)]): DStream[(String,Invoice)] = {
     stream
-      .filter(purchase => purchase.quantity <= 0 || purchase.customerID == null || purchase.invoiceDate == null)
-      .map(purchase => ("facturas_erroneas", 1.0))
+      .map(_._2)
+      .filter(invoice =>
+          invoice.numberItems > 0 &&
+          invoice.customerId != null &&
+          invoice.time != null &&
+          !invoice.invoiceNo.startsWith("C"))
+      .map(invoice => (invoice.invoiceNo,invoice))
+  }
+  def getWrongInvoices(stream: DStream[(String,Invoice)]): DStream[(String, String)] = {
+    stream
+      .map(_._2)
+      .filter(invoice => invoice.numberItems <= 0 || invoice.customerId == null || invoice.time == null)
+      .map(invoice => ("facturas_erroneas", 1.0))
       .reduceByKey(_ + _)
-      .map(purchase => ("facturas_erroneas", purchase._2.toString))
+      .map(invoice => ("facturas_erroneas", invoice._2.toString))
   }
 
-  def getCanceledPurchases(stream: DStream[Purchase]): DStream[(String, String)] = {
+  def getCanceledInvoices(stream: DStream[(String,Invoice)]): DStream[(String, String)] = {
     stream
-      .filter(purchase => purchase.invoiceNo.startsWith("C"))
+      .map(_._2)
+      .filter(invoice => invoice.invoiceNo.startsWith("C"))
       .countByWindow(Seconds(480), Seconds(20))
       .map(count => ("cancelaciones", count.toString))
   }
-/*
-  def predictAnomaly(sc: SparkContext, stream: DStream[Purchase], model: KMeansModel, threshold: Double): DStream[(String, String)] = {
 
-    val spark = SparkSession.builder().config(sc.getConf).getOrCreate()
-    val columns = List("InvoiceNo","Quantity","InvoiceDate","UnitPrice","CustomerID","Country")
+  def predictAnomaly(sc: SparkContext, stream: DStream[(String,Invoice)], model: KMeansModel, threshold: Double): DStream[(String, String)] = {
 
-    val dataframe = stream.foreachRDD(rdd => {
-      spark.createDataFrame(rdd).toDF(columns:_*)
-    })
-
-    val featurized = featurizeData(dataframe)
-    val filtered = filterData(featurized)
-    val dataset = toDataset(filtered)
+    val dataset = stream.map{ case (invoiceNo, invoice) =>
+      (invoiceNo, Vectors.dense(
+        invoice.avgUnitPrice,
+        invoice.minUnitPrice,
+        invoice.maxUnitPrice,
+        invoice.time,
+        invoice.numberItems
+      ))
+    }
 
     // We are going to use this a lot (cache it)
     dataset.cache()
 
     val anomalies = dataset.filter(
-      d => distToCentroid(d._1, model) > threshold
-    )
+      d => distToCentroid(d._2, model) > threshold
+    ).map(tuple => (tuple._1,"Is anomaly"))
 
-    anomalies.count()
-    anomalies.filter(x => x._2 != "normal.").count
-
-
-    val count = stream.foreachRDD(rdd => {
-
-      val dataframe = spark.createDataFrame(rdd).toDF(columns:_*)
-
-
-      val featurized = featurizeData(dataframe)
-      val filtered = filterData(featurized)
-      val dataset = toDataset(filtered)
-
-      // We are going to use this a lot (cache it)
-      dataset.cache()
-
-      val anomalies = dataset.filter(
-        d => distToCentroid(d, model) > threshold
-      )
-
-      anomalies.count()
-      anomalies.filter(x => x != "normal.").count
-    })
-
-    count
-
+    anomalies
 
   }
 
-  def updateState(newPurchase: Seq[Purchase], oldState: Option[(Purchase, String)]) = {
-
-    val newState = oldState.getOrElse()
-
-    val sortedPurchases = newPurchase.map(_.invoiceDate => LocalDateTime.parse(_.dateTime)).sortBy(_.invoiceDate)
-
-    state match {
-      case Some((prevPurchase, prevDate)) =>
-        val elapsed = sortedPurchases.head.invoiceDate - prevPurchase.invoiceDate
-        if (elapsed >= 40000) {
-          Some(sortedPurchases.last, sortedPurchases.last.invoiceDate)
-        } else {
-          Some(prevPurchase, prevDate)
-        }
-
-      case None =>
-        Some((sortedPurchases.last, sortedPurchases.last.invoiceDate))
-    }
-
-    }
-
-
-
-  }
-*/
 }
