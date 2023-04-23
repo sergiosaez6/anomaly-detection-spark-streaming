@@ -12,7 +12,7 @@ object KMeansClusterInvoices {
 
     import Clustering._
 
-    val sparkConf = new SparkConf().setAppName("ClusterInvoices")
+    val sparkConf = new SparkConf().setAppName("KMeansClusterInvoices")
     val sc = new SparkContext(sparkConf)
 
     // load data
@@ -30,7 +30,7 @@ object KMeansClusterInvoices {
     // We are going to use this a lot (cache it)
     dataset.cache()
 
-    // Print a sampl
+    // Print a sample
     dataset.take(5).foreach(println)
 
     val model = trainModel(dataset)

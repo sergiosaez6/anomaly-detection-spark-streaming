@@ -57,7 +57,6 @@ object InvoicePipeline {
     // Followed by a stateful transformation to generate invoices
     val purchasesStream = parsePurchases(purchasesFeed)
     System.out.println("Purchases parsed")
-    //val initialInvoiceState = sc.emptyRDD[(String, Invoice)].mapValues(_ => None)
     val invoicesStream = purchasesStream.updateStateByKey(updateStateFunc)
     System.out.println("Invoices stream")
 
@@ -174,7 +173,7 @@ object InvoicePipeline {
     stream
       .map(_._2)
       .map(line => new CsvParser(new CsvParserSettings()).parseLine(line))
-      .map(fields => (fields(0),Purchase(fields(0), fields(1).toInt, fields(2), fields(3).toDouble, fields(4), fields(5))))
+      .map(fields => (fields(0),Purchase(fields(0), fields(3).toInt, fields(4), fields(5).toDouble, fields(6), fields(7))))
   }
 
   /**
@@ -195,33 +194,33 @@ object InvoicePipeline {
    * Function to update the state of an invoice (from the received purchases), to be used in updateStateByKey()
    */
   def updateStateFunc(newPurchase: Seq[Purchase], currentInvoiceState: Option[Invoice]): Option[Invoice] = {
-    if(newPurchase.isEmpty) {
-      currentInvoiceState
-    } else {
 
-      val invoiceNo = newPurchase.head.invoiceNo
-      // Aggregated values of the purchases
-      val numberItems = newPurchase.map(_.quantity).sum
-      val avgUnitPrice = newPurchase.map(_.unitPrice).sum/numberItems
-      val minUnitPrice = newPurchase.map(_.unitPrice).min
-      val maxUnitPrice = newPurchase.map(_.unitPrice).max
-      val lastUpdated = System.currentTimeMillis()
-      val time = getHour(newPurchase.head.invoiceDate)
-      val lines = newPurchase.length
-      val customerId = newPurchase.head.customerID
+    val invoiceNo = newPurchase.head.invoiceNo
+    // Aggregated values of the purchases
+    val numberItems = newPurchase.map(_.quantity).sum
+    val avgUnitPrice = newPurchase.map(_.unitPrice).sum/numberItems
+    val minUnitPrice = newPurchase.map(_.unitPrice).min
+    val maxUnitPrice = newPurchase.map(_.unitPrice).max
+    val lastUpdated = System.currentTimeMillis()
+    val time = getHour(newPurchase.head.invoiceDate)
+    val lines = newPurchase.length
+    val customerId = newPurchase.head.customerID
 
-      val newState = currentInvoiceState.getOrElse(Invoice(invoiceNo,avgUnitPrice,minUnitPrice,maxUnitPrice,time,numberItems,
+    // Get the current state to 'initialize' the new one. getOrElse allows to get the state in case it exists
+    // or create a new one with the arguments that are pass (Invoice)
+    val newState = currentInvoiceState.getOrElse(Invoice(invoiceNo,avgUnitPrice,minUnitPrice,maxUnitPrice,time,numberItems,
         lastUpdated,lines,customerId))
 
-      //if(newState.lastUpdated - currentInvoiceState.get.lastUpdated < 40000) {
-      if(lastUpdated - newState.lastUpdated < 40000) {
-        Some(newState.copy(avgUnitPrice=avgUnitPrice, minUnitPrice=minUnitPrice, maxUnitPrice=maxUnitPrice,
-        numberItems=newState.numberItems+numberItems, lastUpdated=lastUpdated, lines=newState.lines+lines))
-      } else {
-        Some(newState.copy(avgUnitPrice=avgUnitPrice, minUnitPrice=minUnitPrice, maxUnitPrice=maxUnitPrice,
-          time=time, numberItems=newState.numberItems+numberItems, lastUpdated=lastUpdated, lines=newState.lines+lines))
-        None
-      }
+    // If it has been less than 40 seconds (40000 milliseconds) we just update the current state with the
+    // aggregated values from the incoming purchases
+    if(lastUpdated - newState.lastUpdated < 40000) {
+      Some(newState.copy(avgUnitPrice=avgUnitPrice, minUnitPrice=minUnitPrice, maxUnitPrice=maxUnitPrice,
+      numberItems=newState.numberItems+numberItems, lastUpdated=lastUpdated, lines=newState.lines+lines))
+    // If not, a whole new state is generated and it is reset to None for the next stream
+    } else {
+      Some(newState.copy(avgUnitPrice=avgUnitPrice, minUnitPrice=minUnitPrice, maxUnitPrice=maxUnitPrice,
+        time=time, numberItems=newState.numberItems+numberItems, lastUpdated=lastUpdated, lines=newState.lines+lines))
+      None
     }
   }
 
@@ -231,17 +230,15 @@ object InvoicePipeline {
    * - No negative number of items
    * - Non-null customer
    * - Non-null invoice date/hour (time)
-   * - Non-cancelled invoices
+   * - Non-canceled invoices
    */
   def getValidInvoices(stream: DStream[(String,Invoice)]): DStream[(String,Invoice)] = {
     stream
-      .map(_._2)
       .filter(invoice =>
-          invoice.numberItems > 0 &&
-          invoice.customerId != null &&
-          invoice.time != null &&
-          !invoice.invoiceNo.startsWith("C"))
-      .map(invoice => (invoice.invoiceNo,invoice))
+          invoice._2.numberItems > 0 &&
+          invoice._2.customerId != null &&
+          invoice._2.time != null &&
+          !invoice._2.invoiceNo.startsWith("C"))
   }
 
   /**
@@ -250,11 +247,8 @@ object InvoicePipeline {
    */
   def getWrongInvoices(stream: DStream[(String,Invoice)]): DStream[(String, String)] = {
     stream
-      .map(_._2)
-      .filter(invoice => invoice.numberItems <= 0 || invoice.customerId == null || invoice.time == null)
-      .map(_ => ("facturas_erroneas", 1.0))
-      .reduceByKey(_ + _)
-      .map(invoice => ("facturas_erroneas", invoice._2.toString))
+      .filter(invoice => invoice._2.numberItems <= 0 || invoice._2.customerId == null || invoice._2.time == null)
+      .map(invoice => (invoice._1, "The invoice with invoiceNo: "+invoice._1+" is not valid"))
   }
 
   /**
@@ -263,10 +257,9 @@ object InvoicePipeline {
    */
   def getCanceledInvoices(stream: DStream[(String,Invoice)]): DStream[(String, String)] = {
     stream
-      .map(_._2)
-      .filter(invoice => invoice.invoiceNo.startsWith("C"))
-      .countByWindow(Seconds(480), Seconds(20))
-      .map(count => ("cancelaciones", count.toString))
+      .filter(invoice => invoice._2.invoiceNo.startsWith("C"))
+      .countByWindow(Seconds(480), Seconds(60))
+      .map(count => (count.toString,"Canceled invoices in the last 8 minutes: "+count.toString))
   }
 
   /**
@@ -289,7 +282,7 @@ object InvoicePipeline {
 
     val anomalies = dataset.filter(
       d => distToCentroid(d._2, model) > threshold
-    ).map(tuple => (tuple._1,"Is anomaly"))
+    ).map(tuple => (tuple._1,"The invoice with invoiceNo: "+tuple._1+" is considered an anomaly by KMeans"))
 
     anomalies
 
@@ -315,7 +308,8 @@ object InvoicePipeline {
 
     val anomalies = dataset.filter(
       d => distToCentroid_bisect(d._2, model) > threshold
-    ).map(tuple => (tuple._1,"Is anomaly"))
+    ).map(tuple => (tuple._1,"The invoice with invoiceNo: "+tuple._1+" is considered an anomaly by BisectingKMeans"))
+
 
     anomalies
 

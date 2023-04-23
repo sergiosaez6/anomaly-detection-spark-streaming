@@ -12,7 +12,7 @@ object BisectionKMeansClusterInvoices {
 
     import Clustering._
 
-    val sparkConf = new SparkConf().setAppName("ClusterInvoices")
+    val sparkConf = new SparkConf().setAppName("BisectClusterInvoices")
     val sc = new SparkContext(sparkConf)
 
     // load data

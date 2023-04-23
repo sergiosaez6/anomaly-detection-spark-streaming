@@ -1,4 +1,5 @@
 #!/bin/bash
 
-execute.sh es.dmr.uimp.clustering.KMeansClusterInvoices ./clustering ./threshold
-execute.sh es.dmr.uimp.clustering.BisectionKMeansClusterInvoices ./clustering_bisect ./threshold_bisect
+FILE=./src/main/resources/training.csv
+./execute.sh es.dmr.uimp.clustering.KMeansClusterInvoices ${FILE} ./clustering ./threshold
+./execute.sh es.dmr.uimp.clustering.BisectionKMeansClusterInvoices ${FILE} ./clustering_bisect ./threshold_bisect

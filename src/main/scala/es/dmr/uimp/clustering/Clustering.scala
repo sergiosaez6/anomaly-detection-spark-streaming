@@ -49,7 +49,7 @@ object Clustering {
     val dfTotalPrices = df.withColumn("TotalPrice", df("Quantity")*df("UnitPrice"))
 
     // Prices and products by invoice
-    val pricesProducts = df.groupBy("InvoiceNo").agg(
+    val pricesProducts = dfTotalPrices.groupBy("InvoiceNo").agg(
       avg("TotalPrice").alias("AvgUnitPrice"),
       min("TotalPrice").alias("MinUnitPrice"),
       max("TotalPrice").alias("MaxUnitPrice"),
@@ -57,7 +57,7 @@ object Clustering {
     )
 
     // Hour of the invoice
-    val dfHour = dfTotalPrices.withColumn("Time", hour(df("InvoiceDate")))
+    val dfHour = df.withColumn("Time", df("Hour"))
 
     // Dataframe with the proper features
     val featurizedDf = dfHour
