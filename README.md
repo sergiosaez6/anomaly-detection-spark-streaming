@@ -15,34 +15,34 @@ The basis of the project, i.e. the skeleton files *Clustering.scala*, *train.sca
 
 To execute this project, the following is needed in this order (example in Ubuntu):
 - Compile the project with  (from project folder):
-''' 
+``` 
 sbt clean assembly
-'''
+```
 - Set up the Zookeeper and Kafka servers (from the Kafka installation folder):
-''' 
+``` 
 sudo bin/zookeeper-server-start.sh config/zookeeper.properties &
 sudo bin/kafka-server-start.sh config/server.properties &
-'''
+```
 - Create the required topics (purchases, facturas_erroneas, cancelaciones, anomalias_kmeans, anomalias_buscet_kmeans):
-'''
+```
 sudo bin/kafka-topics.sh --create bin/kafka-topics.sh --topic {topic} --partitions 1 –replication-factor 1 –zookeeper localhost:2181
-'''
+```
 - Connect to the output topics (facturas_erroneas, cancelaciones, anomalias_kmeans, anomalias_buscet_kmeans):
-'''
+```
 sudo bin/kafka-console-producer.sh --broker-list localhost:9092 --topic {topic}
-'''
+```
 - Execution of the training (from the project folder):
-'''
+```
 sudo ./start_training.sh
-'''
+```
 - Execution of the pipeline (from the project folder):
-'''
+```
 sudo ./start_pipeline.sh
-'''
+```
 - Execution of the producer (from the project folder):
-'''
+```
 sudo ./production.sh
-'''
+```
 
 
 ## Spanish
@@ -60,33 +60,31 @@ La base del proyecto, es decir,el esqueleto de los ficheros *Clustering.scala*, 
 
 Para ejecutar el proyecto, es necesario realziar los siguiente en este orden (ejemplo en Ubuntu):
 - Compilar el proyecto (desde el directorio del proyecto): 
-
 ```
 sbt clean assembly
 ```
-
 - Arrancar el servidor Zookeeper y el de Kafka (desde el directorio de isntalación de Kafka): 
-'''
+```
 sudo bin/zookeeper-server-start.sh config/zookeeper.properties &
 sudo bin/kafka-server-start.sh config/server.properties &
-'''
+```
 - Crrear los topics necesarios (purchases, facturas_erroneas, cancelaciones, anomalias_kmeans, anomalias_buscet_kmeans):
-'''
+```
 sudo bin/kafka-topics.sh --create bin/kafka-topics.sh --topic {topic} --partitions 1 –replication-factor 1 –zookeeper localhost:2181
-'''
+```
 - Conectar con los topics de salida (facturas_erroneas, cancelaciones, anomalias_kmeans, anomalias_buscet_kmeans):
-'''
+```
 sudo bin/kafka-console-producer.sh --broker-list localhost:9092 --topic {topic}
-'''
+```
 - Ejecución del entrenamiento (desde el directorio del proyecto):
-'''
+```
 sudo ./start_training.sh
-'''
+```
 - Ejecutar el pipeline (desde el directorio del proyecto):
-'''
+```
 sudo ./start_pipeline.sh
-'''
+```
 - Ejecutar el productor de datos (desde el directorio del proyecto):
-'''
+```
 sudo ./production.sh
-'''
+```
