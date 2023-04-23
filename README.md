@@ -60,9 +60,11 @@ La base del proyecto, es decir,el esqueleto de los ficheros *Clustering.scala*, 
 
 Para ejecutar el proyecto, es necesario realziar los siguiente en este orden (ejemplo en Ubuntu):
 - Compilar el proyecto (desde el directorio del proyecto): 
-'''
+
+```
 sbt clean assembly
-'''
+```
+
 - Arrancar el servidor Zookeeper y el de Kafka (desde el directorio de isntalación de Kafka): 
 '''
 sudo bin/zookeeper-server-start.sh config/zookeeper.properties &
