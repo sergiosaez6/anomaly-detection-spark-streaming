@@ -12,6 +12,7 @@ import java.util.HashMap
 
 import com.univocity.parsers.csv.{CsvParser, CsvParserSettings}
 import es.dmr.uimp.clustering.KMeansClusterInvoices.distToCentroid
+import es.dmr.uimp.clustering.BisectionKMeansClusterInvoices.distToCentroid
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.mllib.linalg.Vectors
 import org.apache.spark.rdd.RDD
@@ -30,8 +31,8 @@ object InvoicePipeline {
 
   def main(args: Array[String]) {
 
-    //val Array(modelFile, thresholdFile, modelFileBisect, thresholdFileBisect, zkQuorum, group, topics, numThreads, brokers) = args
-    val Array(zkQuorum, group, topics, numThreads, brokers) = args
+    val Array(modelFile, thresholdFile, modelFileBisect, thresholdFileBisect, zkQuorum, group, topics, numThreads, brokers) = args
+    //val Array(zkQuorum, group, topics, numThreads, brokers) = args
     val sparkConf = new SparkConf().setAppName("InvoicePipeline")
     val sc = new SparkContext(sparkConf)
     val ssc = new StreamingContext(sc, Seconds(20))
@@ -40,11 +41,11 @@ object InvoicePipeline {
     ssc.checkpoint("./checkpoint")
 
     // TODO: Load model and broadcast
-    //val (kMeansModel, kMeansThreshold) = loadKMeansAndThreshold(sc, modelFile, thresholdFile)
+    val (kMeansModel, kMeansThreshold) = loadKMeansAndThreshold(sc, modelFile, thresholdFile)
+    val (bisectModel, bisectThreshold) = loadBisectKMeansAndThreshold(sc, modelFileBisect, thresholdFileBisect)
     val bcBrokers = sc.broadcast(brokers)
 
     // TODO: Build pipeline
-
     // connect to kafka
     val purchasesFeed = connectToPurchases(ssc, zkQuorum, group, topics, numThreads)
 
@@ -52,13 +53,18 @@ object InvoicePipeline {
     purchasesFeed.print()
     // TODO: rest of pipeline
 
+    // First, the stream is parsed to a Purchase class stream
+    // Followed by a stateful transformation to generate invoices
     val purchasesStream = parsePurchases(purchasesFeed)
     System.out.println("Purchases parsed")
-
     //val initialInvoiceState = sc.emptyRDD[(String, Invoice)].mapValues(_ => None)
     val invoicesStream = purchasesStream.updateStateByKey(updateStateFunc)
     System.out.println("Invoices stream")
 
+    // Once we have the proper invoices stream, we performed the required actions:
+    // 1. Get the valid invoices, that will be predicted as anomalies or not afterwards
+    // 2. Get the wrong invoices
+    // 3. Get the canceled invoices
     val validInvoices = getValidInvoices(invoicesStream)
     System.out.println("Got valid invoices")
 
@@ -68,12 +74,16 @@ object InvoicePipeline {
     val canceledInvoices = getCanceledInvoices(invoicesStream)
     System.out.println("Extracted canceled invoices")
 
-    /*val predictionsKMeans = predictAnomaly(validInvoices, kMeansModel, kMeansThreshold)
-
+    // Finally, all the information is published in the corresponding Kafka topic
+    val predictionsKMeans = predictAnomalyKMeans(validInvoices, kMeansModel, kMeansThreshold)
     predictionsKMeans.foreachRDD(rdd => {
       publishToKafka("anomalias_kmeans")(bcBrokers)(rdd)
     })
-    */
+
+    val predictionsBisectKMeans = predictAnomalyBisectKMeans(validInvoices, bisectModel, bisectThreshold)
+    predictionsBisectKMeans.foreachRDD(rdd => {
+      publishToKafka("anomalias_bisect_kmeans")(bcBrokers)(rdd)
+    })
 
     wrongInvoices.foreachRDD(rdd => {
       publishToKafka("facturas_erroneas")(bcBrokers)(rdd)
@@ -90,6 +100,10 @@ object InvoicePipeline {
 
   }
 
+  /**
+   * Publish the RDDs in the required topic
+   */
+
   def publishToKafka(topic : String)(kafkaBrokers : Broadcast[String])(rdd : RDD[(String, String)]) = {
     rdd.foreachPartition( partition => {
       val producer = new KafkaProducer[String, String](kafkaConf(kafkaBrokers.value))
@@ -100,6 +114,9 @@ object InvoicePipeline {
     })
   }
 
+  /**
+   * Set up the proper Kafka configuration
+   */
   def kafkaConf(brokers : String) = {
     val props = new HashMap[String, Object]()
     props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, brokers)
@@ -109,7 +126,7 @@ object InvoicePipeline {
   }
 
   /**
-    * Load the model information: centroid and threshold
+    * Load the kmeans model information: centroid and threshold
     */
   def loadKMeansAndThreshold(sc: SparkContext, modelFile : String, thresholdFile : String) : Tuple2[KMeansModel,Double] = {
     val kmeans = KMeansModel.load(sc, modelFile)
@@ -120,7 +137,9 @@ object InvoicePipeline {
     (kmeans, threshold)
   }
 
-
+  /**
+   * Connects to the required topic and retrieves the stream
+   */
   def connectToPurchases(ssc: StreamingContext, zkQuorum : String, group : String,
                          topics : String, numThreads : String): DStream[(String, String)] ={
 
@@ -134,7 +153,23 @@ object InvoicePipeline {
    * Own functions
    */
 
-  // Function to parse from the CSV string we receive to a Purchase object
+  /**
+   *
+   * Function to load the BisectingKMeans model
+   */
+  def loadBisectKMeansAndThreshold(sc: SparkContext, modelFile : String, thresholdFile : String) : Tuple2[BisectingKMeansModel,Double] = {
+    val kmeans_bisect = BisectingKMeansModel.load(sc, modelFile)
+    // parse threshold file
+    val rawData = sc.textFile(thresholdFile, 20)
+    val threshold = rawData.map{line => line.toDouble}.first()
+
+    (kmeans_bisect, threshold)
+  }
+
+  /**
+   *
+   * Function to parse from the CSV string we receive to a Purchase object
+   */
   def parsePurchases(stream: DStream[(String,String)]): DStream[(String,Purchase)] = {
     stream
       .map(_._2)
@@ -142,7 +177,10 @@ object InvoicePipeline {
       .map(fields => (fields(0),Purchase(fields(0), fields(1).toInt, fields(2), fields(3).toDouble, fields(4), fields(5))))
   }
 
-  // Function to extract the hour from the date string
+  /**
+   *
+   * Function to extract the hour from the date string
+   */
   def getHour(date: String) : Double = {
     var out = -1.0
     if (!StringUtils.isEmpty(date)) {
@@ -152,8 +190,10 @@ object InvoicePipeline {
     }
     out
   }
-
-  // Function to update the state of an invoice (from the received purchases), to be used in updateStateByKey()
+  /**
+   *
+   * Function to update the state of an invoice (from the received purchases), to be used in updateStateByKey()
+   */
   def updateStateFunc(newPurchase: Seq[Purchase], currentInvoiceState: Option[Invoice]): Option[Invoice] = {
     if(newPurchase.isEmpty) {
       currentInvoiceState
@@ -185,11 +225,14 @@ object InvoicePipeline {
     }
   }
 
-  // Function to get only those valid invoices:
-  // - No negative number of items
-  // - Non-null customer
-  // - Non-null invoice date/hour (time)
-  // - Non-cancelled invoices
+  /**
+   *
+   * Function to get only those valid invoices:
+   * - No negative number of items
+   * - Non-null customer
+   * - Non-null invoice date/hour (time)
+   * - Non-cancelled invoices
+   */
   def getValidInvoices(stream: DStream[(String,Invoice)]): DStream[(String,Invoice)] = {
     stream
       .map(_._2)
@@ -201,7 +244,10 @@ object InvoicePipeline {
       .map(invoice => (invoice.invoiceNo,invoice))
   }
 
-  // Function to the those non-valid invoices
+  /**
+   *
+   * Function to the those non-valid invoices
+   */
   def getWrongInvoices(stream: DStream[(String,Invoice)]): DStream[(String, String)] = {
     stream
       .map(_._2)
@@ -211,7 +257,10 @@ object InvoicePipeline {
       .map(invoice => ("facturas_erroneas", invoice._2.toString))
   }
 
-  // Function ot get the canceled invoices
+  /**
+   *
+   * Function ot get the canceled invoices
+   */
   def getCanceledInvoices(stream: DStream[(String,Invoice)]): DStream[(String, String)] = {
     stream
       .map(_._2)
@@ -220,8 +269,37 @@ object InvoicePipeline {
       .map(count => ("cancelaciones", count.toString))
   }
 
-  // Function to used the ML algorithm to predict whether the incoming invoice is an anomaly or not
-  def predictAnomaly(stream: DStream[(String,Invoice)], model: KMeansModel, threshold: Double): DStream[(String, String)] = {
+  /**
+   *
+   * Function to use the KMeansModel algorithm to predict whether the incoming invoice is an anomaly or not
+   */
+  def predictAnomalyKMeans(stream: DStream[(String,Invoice)], model: KMeansModel, threshold: Double): DStream[(String, String)] = {
+
+    val dataset = stream.map{ case (invoiceNo, invoice) =>
+      (invoiceNo, Vectors.dense(
+        invoice.avgUnitPrice,
+        invoice.minUnitPrice,
+        invoice.maxUnitPrice,
+        invoice.time,
+        invoice.numberItems
+      ))
+    }
+
+    dataset.cache()
+
+    val anomalies = dataset.filter(
+      d => distToCentroid(d._2, model) > threshold
+    ).map(tuple => (tuple._1,"Is anomaly"))
+
+    anomalies
+
+  }
+
+  /**
+   *
+   * Function to used the BisectingKMeansModel algorithm to predict whether the incoming invoice is an anomaly or not
+   */
+  def predictAnomalyBisectKMeans(stream: DStream[(String,Invoice)], model: BisectingKMeansModel, threshold: Double): DStream[(String, String)] = {
 
     val dataset = stream.map{ case (invoiceNo, invoice) =>
       (invoiceNo, Vectors.dense(
