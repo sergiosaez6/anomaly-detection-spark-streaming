@@ -59,6 +59,7 @@ object Clustering {
     // Hour of the invoice
     val dfHour = dfTotalPrices.withColumn("Time", hour(df("InvoiceDate")))
 
+    // Dataframe with the proper features
     val featurizedDf = dfHour
       .join(pricesProducts, Seq("InvoiceNo"))
       .select("InvoiceNo", "AvgUnitPrice", "MinUnitPrice", "MaxUnitPrice", "Time", "NumberItems", "CustomerID")

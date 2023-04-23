@@ -1,8 +1,5 @@
 package es.dmr.uimp.realtime
 
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
-
 import org.apache.commons.lang3.StringUtils
 import org.apache.spark.SparkConf
 import org.apache.spark.SparkContext
@@ -14,14 +11,10 @@ import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, Produce
 import java.util.HashMap
 
 import com.univocity.parsers.csv.{CsvParser, CsvParserSettings}
-import es.dmr.uimp.clustering.Clustering.{featurizeData, filterData, saveThreshold, toDataset}
-import es.dmr.uimp.clustering.KMeansClusterInvoices
-import es.dmr.uimp.clustering.KMeansClusterInvoices.{distToCentroid, trainModel}
+import es.dmr.uimp.clustering.KMeansClusterInvoices.distToCentroid
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.mllib.linalg.Vectors
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.functions.udf
-import org.apache.spark.sql.{Row, SQLContext, SparkSession}
 
 object InvoicePipeline {
 
@@ -75,11 +68,12 @@ object InvoicePipeline {
     val canceledInvoices = getCanceledInvoices(invoicesStream)
     System.out.println("Extracted canceled invoices")
 
-    val predictionsKMeans = predictAnomaly(sc, validInvoices, kMeansModel, kMeansThreshold)
+    /*val predictionsKMeans = predictAnomaly(validInvoices, kMeansModel, kMeansThreshold)
 
     predictionsKMeans.foreachRDD(rdd => {
       publishToKafka("anomalias_kmeans")(bcBrokers)(rdd)
     })
+    */
 
     wrongInvoices.foreachRDD(rdd => {
       publishToKafka("facturas_erroneas")(bcBrokers)(rdd)
@@ -140,6 +134,7 @@ object InvoicePipeline {
    * Own functions
    */
 
+  // Function to parse from the CSV string we receive to a Purchase object
   def parsePurchases(stream: DStream[(String,String)]): DStream[(String,Purchase)] = {
     stream
       .map(_._2)
@@ -158,6 +153,7 @@ object InvoicePipeline {
     out
   }
 
+  // Function to update the state of an invoice (from the received purchases), to be used in updateStateByKey()
   def updateStateFunc(newPurchase: Seq[Purchase], currentInvoiceState: Option[Invoice]): Option[Invoice] = {
     if(newPurchase.isEmpty) {
       currentInvoiceState
@@ -189,6 +185,11 @@ object InvoicePipeline {
     }
   }
 
+  // Function to get only those valid invoices:
+  // - No negative number of items
+  // - Non-null customer
+  // - Non-null invoice date/hour (time)
+  // - Non-cancelled invoices
   def getValidInvoices(stream: DStream[(String,Invoice)]): DStream[(String,Invoice)] = {
     stream
       .map(_._2)
@@ -199,15 +200,18 @@ object InvoicePipeline {
           !invoice.invoiceNo.startsWith("C"))
       .map(invoice => (invoice.invoiceNo,invoice))
   }
+
+  // Function to the those non-valid invoices
   def getWrongInvoices(stream: DStream[(String,Invoice)]): DStream[(String, String)] = {
     stream
       .map(_._2)
       .filter(invoice => invoice.numberItems <= 0 || invoice.customerId == null || invoice.time == null)
-      .map(invoice => ("facturas_erroneas", 1.0))
+      .map(_ => ("facturas_erroneas", 1.0))
       .reduceByKey(_ + _)
       .map(invoice => ("facturas_erroneas", invoice._2.toString))
   }
 
+  // Function ot get the canceled invoices
   def getCanceledInvoices(stream: DStream[(String,Invoice)]): DStream[(String, String)] = {
     stream
       .map(_._2)
@@ -216,7 +220,8 @@ object InvoicePipeline {
       .map(count => ("cancelaciones", count.toString))
   }
 
-  def predictAnomaly(sc: SparkContext, stream: DStream[(String,Invoice)], model: KMeansModel, threshold: Double): DStream[(String, String)] = {
+  // Function to used the ML algorithm to predict whether the incoming invoice is an anomaly or not
+  def predictAnomaly(stream: DStream[(String,Invoice)], model: KMeansModel, threshold: Double): DStream[(String, String)] = {
 
     val dataset = stream.map{ case (invoiceNo, invoice) =>
       (invoiceNo, Vectors.dense(
@@ -228,7 +233,6 @@ object InvoicePipeline {
       ))
     }
 
-    // We are going to use this a lot (cache it)
     dataset.cache()
 
     val anomalies = dataset.filter(
