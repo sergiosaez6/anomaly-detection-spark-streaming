@@ -12,7 +12,7 @@ import java.util.HashMap
 
 import com.univocity.parsers.csv.{CsvParser, CsvParserSettings}
 import es.dmr.uimp.clustering.KMeansClusterInvoices.distToCentroid
-import es.dmr.uimp.clustering.BisectionKMeansClusterInvoices.distToCentroid
+import es.dmr.uimp.clustering.BisectionKMeansClusterInvoices.distToCentroid_bisect
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.mllib.linalg.Vectors
 import org.apache.spark.rdd.RDD
@@ -314,7 +314,7 @@ object InvoicePipeline {
     dataset.cache()
 
     val anomalies = dataset.filter(
-      d => distToCentroid(d._2, model) > threshold
+      d => distToCentroid_bisect(d._2, model) > threshold
     ).map(tuple => (tuple._1,"Is anomaly"))
 
     anomalies

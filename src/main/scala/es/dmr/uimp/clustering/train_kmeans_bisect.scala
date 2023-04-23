@@ -38,7 +38,7 @@ object BisectionKMeansClusterInvoices {
     model.save(sc, args(1))
 
     // Save threshold
-    val distances = dataset.map(d => distToCentroid(d, model))
+    val distances = dataset.map(d => distToCentroid_bisect(d, model))
     val threshold = distances.top(2000).last // set the last of the furthest 2000 data points as the threshold
 
     saveThreshold(threshold, args(2))
@@ -65,7 +65,7 @@ object BisectionKMeansClusterInvoices {
   /**
    * Calculate distance between data point to centroid.
    */
-  def distToCentroid(datum: Vector, model: BisectingKMeansModel) : Double = {
+  def distToCentroid_bisect(datum: Vector, model: BisectingKMeansModel) : Double = {
     val centroid = model.clusterCenters(model.predict(datum)) // if more than 1 center
     Vectors.sqdist(datum, centroid)
   }
