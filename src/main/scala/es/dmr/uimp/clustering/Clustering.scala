@@ -59,9 +59,9 @@ object Clustering {
     // Hour of the invoice
     val dfHour = dfTotalPrices.withColumn("Time", hour(df("InvoiceDate")))
 
-    val featurizedDf = dfTotalPrices
+    val featurizedDf = dfHour
       .join(pricesProducts, Seq("InvoiceNo"))
-      .select("InvoiceNo", "AvgUnitPrice", "MinUnitPrice", "MaxUnitPrice", "Time", "NumberItems")
+      .select("InvoiceNo", "AvgUnitPrice", "MinUnitPrice", "MaxUnitPrice", "Time", "NumberItems", "CustomerID")
 
     featurizedDf
   }
@@ -71,7 +71,7 @@ object Clustering {
   def filterData(df : DataFrame) : DataFrame = {
    // TODO: Filter cancelations and invalid
     val filteredDf = df
-      .filter(col("Quantity")>0)
+      .filter(col("NumberItems")>0)
       .filter(col("CustomerID").isNotNull)
       .filter(col("InvoiceDate").isNotNull)
       .filter(!col("InvoiceNo").startsWith("C"))
