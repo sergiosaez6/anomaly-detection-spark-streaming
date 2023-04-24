@@ -57,7 +57,7 @@ object InvoicePipeline {
     // Followed by a stateful transformation to generate invoices
     val purchasesStream = parsePurchases(purchasesFeed)
     System.out.println("Purchases parsed")
-    val invoicesStream = purchasesStream.updateStateByKey(updateStateFunc)
+    val invoicesStream = purchasesStream.updateStateByKey(updateStateFunc _)
     System.out.println("Invoices stream")
 
     // Once we have the proper invoices stream, we performed the required actions:
@@ -194,34 +194,47 @@ object InvoicePipeline {
    * Function to update the state of an invoice (from the received purchases), to be used in updateStateByKey()
    */
   def updateStateFunc(newPurchase: Seq[Purchase], currentInvoiceState: Option[Invoice]): Option[Invoice] = {
+    // Set a control in case an empty Purchase is received
+    if(newPurchase.isEmpty){
+      // In this case, if there is a non-null state, it is necessary to check the SLA (40 seconds)
+      if(currentInvoiceState!=null) {
+        if(System.currentTimeMillis() - currentInvoiceState.get.lastUpdated < 40000) {
+          currentInvoiceState
+          // If not, the Invoice is deleted from memory setting its status to None
+        } else {
+          None
+        }
+      } else {
+        currentInvoiceState
+      }
+    } else {
+      val invoiceNo = newPurchase.head.invoiceNo
+      // Aggregated values of the purchases
+      val numberItems = newPurchase.map(_.quantity).sum
+      val avgUnitPrice = newPurchase.map(_.unitPrice).sum/numberItems
+      val minUnitPrice = newPurchase.map(_.unitPrice).min
+      val maxUnitPrice = newPurchase.map(_.unitPrice).max
+      val lastUpdated = System.currentTimeMillis()
+      val time = getHour(newPurchase.head.invoiceDate)
+      val lines = newPurchase.length
+      val customerId = newPurchase.head.customerID
 
-    val invoiceNo = newPurchase.head.invoiceNo
-    // Aggregated values of the purchases
-    val numberItems = newPurchase.map(_.quantity).sum
-    val avgUnitPrice = newPurchase.map(_.unitPrice).sum/numberItems
-    val minUnitPrice = newPurchase.map(_.unitPrice).min
-    val maxUnitPrice = newPurchase.map(_.unitPrice).max
-    val lastUpdated = System.currentTimeMillis()
-    val time = getHour(newPurchase.head.invoiceDate)
-    val lines = newPurchase.length
-    val customerId = newPurchase.head.customerID
-
-    // Get the current state to 'initialize' the new one. getOrElse allows to get the state in case it exists
-    // or create a new one with the arguments that are pass (Invoice)
-    val newState = currentInvoiceState.getOrElse(Invoice(invoiceNo,avgUnitPrice,minUnitPrice,maxUnitPrice,time,numberItems,
+      // Get the current state to 'initialize' the new one. getOrElse allows to get the state in case it exists
+      // or create a new one with the Invoice's arguments
+      val newState = currentInvoiceState.getOrElse(Invoice(invoiceNo,avgUnitPrice,minUnitPrice,maxUnitPrice,time,numberItems,
         lastUpdated,lines,customerId))
 
-    // If it has been less than 40 seconds (40000 milliseconds) we just update the current state with the
-    // aggregated values from the incoming purchases
-    if(lastUpdated - newState.lastUpdated < 40000) {
-      Some(newState.copy(avgUnitPrice=avgUnitPrice, minUnitPrice=minUnitPrice, maxUnitPrice=maxUnitPrice,
-      numberItems=newState.numberItems+numberItems, lastUpdated=lastUpdated, lines=newState.lines+lines))
-    // If not, a whole new state is generated and it is reset to None for the next stream
-    } else {
-      Some(newState.copy(avgUnitPrice=avgUnitPrice, minUnitPrice=minUnitPrice, maxUnitPrice=maxUnitPrice,
-        time=time, numberItems=newState.numberItems+numberItems, lastUpdated=lastUpdated, lines=newState.lines+lines))
-      None
+      // If it has been less than 40 seconds (40000 milliseconds) we just update the current state with the
+      // aggregated values from the incoming purchases
+      if(lastUpdated - newState.lastUpdated < 40000) {
+        Some(newState.copy(avgUnitPrice=avgUnitPrice, minUnitPrice=minUnitPrice, maxUnitPrice=maxUnitPrice,
+          numberItems=newState.numberItems+numberItems, lastUpdated=lastUpdated, lines=newState.lines+lines))
+        // If not, the Invoice is deleted from memory setting its status to None
+      } else {
+        None
+      }
     }
+
   }
 
   /**
@@ -253,11 +266,11 @@ object InvoicePipeline {
 
   /**
    *
-   * Function ot get the canceled invoices
+   * Function to get the canceled invoices
    */
   def getCanceledInvoices(stream: DStream[(String,Invoice)]): DStream[(String, String)] = {
     stream
-      .filter(invoice => invoice._2.invoiceNo.startsWith("C"))
+      .filter(invoice => invoice._1.startsWith("C"))
       .countByWindow(Seconds(480), Seconds(60))
       .map(count => (count.toString,"Canceled invoices in the last 8 minutes: "+count.toString))
   }
