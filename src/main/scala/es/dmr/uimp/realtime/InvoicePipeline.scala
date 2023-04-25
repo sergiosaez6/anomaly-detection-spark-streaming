@@ -95,8 +95,6 @@ object InvoicePipeline {
 
     ssc.start() // Start the computation
     ssc.awaitTermination()
-
-
   }
 
   /**
@@ -196,17 +194,20 @@ object InvoicePipeline {
   def updateStateFunc(newPurchase: Seq[Purchase], currentInvoiceState: Option[Invoice]): Option[Invoice] = {
     // Set a control in case an empty Purchase is received
     if(newPurchase.isEmpty){
-      // In this case, if there is a non-null state, it is necessary to check the SLA (40 seconds)
+      // In this case, if there is a non-null state, it is necessary to check the SLA: there is only 40000 milliseconds
+      // between two consecutive purchases from the same invoice
       if(currentInvoiceState!=null) {
+        // If the 40 seconds have not past, we just maintain the same status for this invoice
         if(System.currentTimeMillis() - currentInvoiceState.get.lastUpdated < 40000) {
           currentInvoiceState
-          // If not, the Invoice is deleted from memory setting its status to None
+        // If the 40 seconds have past, the Invoice is deleted from memory setting its status to None
         } else {
           None
         }
       } else {
         currentInvoiceState
       }
+    // In case a Purchase for the current invoice is received, we update it
     } else {
       val invoiceNo = newPurchase.head.invoiceNo
       // Aggregated values of the purchases
@@ -224,12 +225,11 @@ object InvoicePipeline {
       val newState = currentInvoiceState.getOrElse(Invoice(invoiceNo,avgUnitPrice,minUnitPrice,maxUnitPrice,time,numberItems,
         lastUpdated,lines,customerId))
 
-      // If it has been less than 40 seconds (40000 milliseconds) we just update the current state with the
-      // aggregated values from the incoming purchases
+      // After checking the SLA, we just update the current state with the aggregated values from the incoming purchases
       if(lastUpdated - newState.lastUpdated < 40000) {
         Some(newState.copy(avgUnitPrice=avgUnitPrice, minUnitPrice=minUnitPrice, maxUnitPrice=maxUnitPrice,
           numberItems=newState.numberItems+numberItems, lastUpdated=lastUpdated, lines=newState.lines+lines))
-        // If not, the Invoice is deleted from memory setting its status to None
+        // If the 40 seconds have past, the Invoice is deleted from memory setting its status to None
       } else {
         None
       }
