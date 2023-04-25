@@ -32,7 +32,6 @@ object InvoicePipeline {
   def main(args: Array[String]) {
 
     val Array(modelFile, thresholdFile, modelFileBisect, thresholdFileBisect, zkQuorum, group, topics, numThreads, brokers) = args
-    //val Array(zkQuorum, group, topics, numThreads, brokers) = args
     val sparkConf = new SparkConf().setAppName("InvoicePipeline")
     val sc = new SparkContext(sparkConf)
     val ssc = new StreamingContext(sc, Seconds(20))
@@ -40,18 +39,18 @@ object InvoicePipeline {
     // Checkpointing
     ssc.checkpoint("./checkpoint")
 
-    // TODO: Load model and broadcast
+    // Load model and broadcast
     val (kMeansModel, kMeansThreshold) = loadKMeansAndThreshold(sc, modelFile, thresholdFile)
     val (bisectModel, bisectThreshold) = loadBisectKMeansAndThreshold(sc, modelFileBisect, thresholdFileBisect)
     val bcBrokers = sc.broadcast(brokers)
 
-    // TODO: Build pipeline
+    // Build pipeline
     // connect to kafka
     val purchasesFeed = connectToPurchases(ssc, zkQuorum, group, topics, numThreads)
 
     System.out.println("Purchases received!")
     purchasesFeed.print()
-    // TODO: rest of pipeline
+    // Rest of pipeline
 
     // First, the stream is parsed to a Purchase class stream
     // Followed by a stateful transformation to generate invoices
@@ -303,7 +302,7 @@ object InvoicePipeline {
 
   /**
    *
-   * Function to used the BisectingKMeansModel algorithm to predict whether the incoming invoice is an anomaly or not
+   * Function to use the BisectingKMeansModel algorithm to predict whether the incoming invoice is an anomaly or not
    */
   def predictAnomalyBisectKMeans(stream: DStream[(String,Invoice)], model: BisectingKMeansModel, threshold: Double): DStream[(String, String)] = {
 

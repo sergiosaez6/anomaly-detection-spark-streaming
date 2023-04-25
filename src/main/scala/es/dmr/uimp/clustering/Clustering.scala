@@ -44,7 +44,7 @@ object Clustering {
   }
 
   def featurizeData(df: DataFrame): DataFrame = {
-    // TODO : Featurize the data
+    // Featurize the data
 
     val dfTotalPrices = df.withColumn("TotalPrice", df("Quantity")*df("UnitPrice"))
 
@@ -70,7 +70,7 @@ object Clustering {
 
 
   def filterData(df : DataFrame) : DataFrame = {
-   // TODO: Filter cancelations and invalid
+   // Filter cancelations and invalid
     val filteredDf = df
       .filter(col("NumberItems")>0)
       .filter(col("CustomerID").isNotNull)
@@ -97,7 +97,7 @@ object Clustering {
   }
 
   def elbowSelection(costs: Seq[Double], ratio : Double): Int = {
-    // TODO: Select the best model
+    // Select the best model
 
     val ratios = costs.sliding(2).map{ case Seq(x, y) => y/x }.toSeq
     ratios.indexWhere(_ > ratio) match {
